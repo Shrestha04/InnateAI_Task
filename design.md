@@ -25,25 +25,41 @@ in `app/config.py`) for four `(OSM tag, value)` pairs, each as both a `node` and
 OSM has no "is this a chain" signal built in, so independence is enforced entirely by the
 rule-based prefilter below rather than a search-time keyword bias.
 
-**Rule-based prefilter** (cheap, runs before any model call), `services/osm.py` /
-`services/fit.py::_rule_reject`:
-- **Chain blocklist** — a hard-coded list of ~20 well-known chain names (Starbucks, Costa,
-  Pret, Greggs, Nando's, Toni & Guy, ...) matched case-insensitively against the venue
-  name (`osm.py::is_chain`). The client wants independents with bare frontages, not
-  corporate storefronts that already follow brand guidelines for their entrance.
-- **Must have a `name` tag** — anonymous/unnamed nodes (mis-tagged street furniture, etc.)
-  are dropped before anything else runs.
-- **Venue type restricted** to café / restaurant / salon (`services/fit.py::ALLOWED_TYPES`)
-  — the four OSM tag/value pairs above already constrain this, but the check is repeated
-  in `fit.py` so it's enforced even if the query list changes later.
+**Rule-based prefilter**, applied at two points:
+- **During discovery** (`osm.py::discover_venues`), before anything else runs: a candidate
+  is dropped if it has no `name` tag (anonymous/mis-tagged nodes), and its OSM `venue_type`
+  must match one of the four tag/value pairs above.
+- **During fit scoring** (`services/fit.py::_rule_reject`, ahead of any Gemini call): the
+  **chain blocklist** — a hard-coded list of ~15 well-known UK chains, ~26 name/spelling
+  variants total (Starbucks, Costa/Costa Coffee, Caffe Nero/Nero, Pret/Pret a Manger,
+  Greggs, Nando's/Nandos, Toni & Guy/Toni and Guy, ...) matched case-insensitively (and
+  punctuation/spacing-insensitively — `osm.py::_normalize`) against the venue name
+  (`osm.py::is_chain`). The client wants independents with bare frontages, not corporate
+  storefronts that already follow brand guidelines for their entrance. `_rule_reject` also
+  re-checks venue type against `ALLOWED_TYPES` (redundant with the discovery-stage filter,
+  but enforced again so it still holds if the query list changes later) and requires a
+  resolved address **and** postcode (see below) — a venue that still has neither after
+  geocoding is rejected explicitly with that reasoning rather than passed downstream with a
+  blank address.
+
+**Note on where the chain check sits:** the chain blocklist is applied at the fit-scoring
+stage, not during discovery — a candidate matching a known chain still goes through address
+resolution (including, if needed, a rate-limited Nominatim call) before being rejected. A
+straightforward optimisation I'd make before scaling past a prototype is moving the chain
+check into `discover_venues` itself, ahead of geocoding, so chain venues never cost a
+Nominatim request in the first place.
 
 **Address completion.** OSM's own `addr:*` tags are frequently missing or partial for small
-independents (present for maybe half of candidates in practice). Where `addr:housenumber`/
-`addr:street` or `addr:postcode` is missing, `osm.py::_reverse_geocode` calls Nominatim's
-reverse-geocoding endpoint for that coordinate and fills the gap from its `address.postcode`
-and `display_name`. This runs at Nominatim's mandated rate limit (≤1 request/second, throttled
-explicitly in code) and only for candidates that already passed the chain/type filters above,
-to keep the added latency proportional to what's actually needed.
+independents (present for maybe half of candidates in practice). `osm.py::discover_venues`
+first tries a regex extract of a UK postcode (`UK_POSTCODE_RE`) out of whatever address text
+is already available; only if a postcode is still missing does it call Nominatim's
+reverse-geocoding endpoint (`_reverse_geocode`) for that coordinate and fill the gap from its
+`address.postcode` and `display_name`. This runs at Nominatim's mandated rate limit (≤1
+request/second, throttled explicitly with `asyncio.sleep(1.1)` in code) and — per the note
+above — only after the OSM tag-type filter, not yet the chain filter. A venue whose address
+and postcode are still unresolved after this step is passed through as `None`/`None` rather
+than a fabricated placeholder, and is rejected explicitly (with reasoning) by `fit.py`'s
+address check, so nothing downstream ever sees a fake-looking address.
 
 **Vision-model fit judgement** (`services/fit.py::score_venue`, prompt
 `services/vision.py::FIT_PROMPT`, called via `judge_frontage_fit`). For each surviving
@@ -80,9 +96,12 @@ response (`PipelineRunResult.rejected_venues`) and the UI's "N candidates reject
 so the decision is auditable.
 
 **Selected venues from this run** (a live run against the default London search area,
-reproducible via `README.md` "Running the pipeline"; OSM/Mapillary coverage and Gemini's
-vision judgements aren't perfectly deterministic between runs, so a different run surfaces
-different specific venues, but the accept/reject logic itself is fixed):
+reproducible via `README.md` "Running the pipeline"; `osm.py::discover_venues` explicitly
+shuffles the Overpass result order before taking `max_candidates`, so a different run
+samples a different subset of the search area even with identical parameters — that's the
+main source of run-to-run variation in which venues surface, on top of Mapillary coverage
+and Gemini's vision judgements not being perfectly deterministic either. The accept/reject
+logic itself is fixed):
 
 | Venue | Address | Postcode | Type | Fit score | Frontage | Composite |
 |---|---|---|---|---|---|---|
