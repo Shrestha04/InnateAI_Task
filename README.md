@@ -24,7 +24,7 @@ criteria).
   vision judgements, `gemini-3.1-flash-image` for compositing).
 - No database — the prototype keeps run results in memory (`app/storage.py::RunStore`) and
   generated images on disk (`backend/data/images/`), which is enough for a handful of
-  venues per run. See design.md §4 for what changes at production scale.
+  venues per run. See design.md for what changes at production scale.
 
   <img width="1880" height="859" alt="Screenshot 2026-08-17 182219" src="https://github.com/user-attachments/assets/a2d9683b-9362-4808-b77f-6b03a8cf3179" />
 
@@ -163,7 +163,7 @@ curl -X POST http://127.0.0.1:8000/api/pipeline/run \
 The response includes every selected venue (with its frontage/composite results and which
 compositing method — `gemini` or `classical` — produced the final image) and every rejected
 candidate with its rejection reasoning — the same data the UI renders. Copy the selected
-venues' name/address/postcode and a few notable rejections into `design.md` §1 ("Selected
+venues' name/address/postcode and a few notable rejections into `design.md` ("Selected
 venues from this run").
 
 To regenerate the static `/results` showcase images from fresh live data:
@@ -229,4 +229,4 @@ way.
   measured door-height scaling) kicks in automatically — and is clearly labelled — only
   when Gemini can't generate an image at all (e.g. an unbilled key's 0/day image-generation
   quota), so the pipeline always produces an inspectable result rather than failing
-  silently. Full reasoning in design.md §3.
+  silently. Full reasoning in design.md.
