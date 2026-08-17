@@ -64,7 +64,7 @@ address check, so nothing downstream ever sees a fake-looking address.
 **Vision-model fit judgement** (`services/fit.py::score_venue`, prompt
 `services/vision.py::FIT_PROMPT`, called via `judge_frontage_fit`). For each surviving
 candidate, the best available photo (the OSM `image`/`wikimedia_commons` tag if the venue
-has one, otherwise the closest-matching nearby Mapillary frame — see §2) is sent to Gemini
+has one, otherwise the closest-matching nearby Mapillary frame) is sent to Gemini
 with the venue name/type and this question, answered as strict JSON:
 
 ```json
