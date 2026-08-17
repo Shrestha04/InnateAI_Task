@@ -30,6 +30,9 @@ criteria).
 
   <img width="1898" height="862" alt="Screenshot 2026-08-17 182258" src="https://github.com/user-attachments/assets/3e3cdeba-cdf1-44bc-8c41-bbaad62555cb" />
 
+  <img width="1877" height="856" alt="Screenshot 2026-08-17 183348" src="https://github.com/user-attachments/assets/a85fb6f1-19f3-4b90-8449-56a5654980c2" />
+
+
 ## Project layout
 
 ```
