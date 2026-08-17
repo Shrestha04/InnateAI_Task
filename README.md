@@ -14,8 +14,9 @@ criteria).
 ## Stack
 
 - **Backend:** FastAPI (Python 3.11+), `google-genai` for Gemini vision + image
-  generation, `httpx` for OpenStreetMap / Mapillary, `rembg` + `onnxruntime` + Pillow for
-  the local, non-AI compositing fallback (see below).
+  generation, `httpx` for OpenStreetMap / Mapillary, `beautifulsoup4` for the website
+  `og:image` fallback scrape, `rembg` + `onnxruntime` + Pillow for the local, non-AI
+  compositing fallback (see below).
 - **Frontend:** React + TypeScript (Vite), Tailwind CSS, `react-router` (marketing home
   page, the pipeline/demo console, and a static results showcase as separate routes).
 - **APIs:** OpenStreetMap (Overpass + Nominatim, no key) for venue discovery, Mapillary
@@ -141,7 +142,10 @@ backend on `:8000` (see `vite.config.ts`) — no `.env` needed locally.
 
 ### Running the pipeline / reproducing the venue list in design.md
 
-Once both keys are live, either use the UI button above, or call the API directly:
+Once both keys are live, either use the UI button above, or call the API directly. The
+API's own default is `target_count: 2, max_candidates: 5` (deliberately conservative — see
+the note below on free-tier Gemini quota); pass explicit values to get 3+ venues for the
+brief:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/pipeline/run \
@@ -203,8 +207,12 @@ way.
 
 ## Notes on scope
 
-- Three or more venues per run is the brief's target; `target_count` defaults to 3 and is
-  adjustable in the UI up to 10.
+- Three or more venues per run is the brief's target. The API/UI default (`target_count=2,
+  max_candidates=5`) is set conservatively low out of the box because each additional
+  candidate costs several sequential Gemini calls (fit check, one usability check per
+  frontage attempt, entrance detection, up to 2 compositing QA passes) against what's
+  typically a rate-limited free-tier key — `target_count` is adjustable in the UI up to 10,
+  and was set to 3 for the run documented above.
 - Nothing in the selection, framing, or QA path is manually curated — every accept/reject
   decision (candidate fit, frontage usability, composite quality) is made by rule-based
   code or a Gemini vision judgement, with the reasoning kept and shown in the UI, per the
