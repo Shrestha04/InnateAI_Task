@@ -26,6 +26,10 @@ criteria).
   generated images on disk (`backend/data/images/`), which is enough for a handful of
   venues per run. See design.md §4 for what changes at production scale.
 
+  <img width="1880" height="859" alt="Screenshot 2026-08-17 182219" src="https://github.com/user-attachments/assets/a2d9683b-9362-4808-b77f-6b03a8cf3179" />
+
+  <img width="1898" height="862" alt="Screenshot 2026-08-17 182258" src="https://github.com/user-attachments/assets/3e3cdeba-cdf1-44bc-8c41-bbaad62555cb" />
+
 ## Project layout
 
 ```
