@@ -25,12 +25,13 @@ in `app/config.py`) for four `(OSM tag, value)` pairs, each as both a `node` and
 OSM has no "is this a chain" signal built in, so independence is enforced entirely by the
 rule-based prefilter below rather than a search-time keyword bias.
 
-**Rule-based prefilter** (cheap, runs before any model call):
-- **Chain blocklist** — the same ~20-name hard-coded list as before (Starbucks, Costa,
+**Rule-based prefilter** (cheap, runs before any model call), `services/osm.py` /
+`services/fit.py::_rule_reject`:
+- **Chain blocklist** — a hard-coded list of ~20 well-known chain names (Starbucks, Costa,
   Pret, Greggs, Nando's, Toni & Guy, ...) matched case-insensitively against the venue
-  name. The client wants independents with bare frontages, not corporate storefronts that
-  already follow brand guidelines for their entrance.
-- **Must have a `name` tag** — anonymous/unnamed nodes (bike racks miscategorised, etc.)
+  name (`osm.py::is_chain`). The client wants independents with bare frontages, not
+  corporate storefronts that already follow brand guidelines for their entrance.
+- **Must have a `name` tag** — anonymous/unnamed nodes (mis-tagged street furniture, etc.)
   are dropped before anything else runs.
 - **Venue type restricted** to café / restaurant / salon (`services/fit.py::ALLOWED_TYPES`)
   — the four OSM tag/value pairs above already constrain this, but the check is repeated
@@ -44,11 +45,11 @@ and `display_name`. This runs at Nominatim's mandated rate limit (≤1 request/s
 explicitly in code) and only for candidates that already passed the chain/type filters above,
 to keep the added latency proportional to what's actually needed.
 
-**Vision-model fit judgement** (`services/fit.py::score_venue`, prompt in
-`services/vision.py::FIT_PROMPT`). For each surviving candidate, the best available photo
-(the OSM `image`/`wikimedia_commons` tag if the venue has one, otherwise the closest-matching
-nearby Mapillary frame — see §2) is sent to Gemini with the venue name/type and this
-question, answered as strict JSON:
+**Vision-model fit judgement** (`services/fit.py::score_venue`, prompt
+`services/vision.py::FIT_PROMPT`, called via `judge_frontage_fit`). For each surviving
+candidate, the best available photo (the OSM `image`/`wikimedia_commons` tag if the venue
+has one, otherwise the closest-matching nearby Mapillary frame — see §2) is sent to Gemini
+with the venue name/type and this question, answered as strict JSON:
 
 ```json
 {
@@ -63,7 +64,10 @@ question, answered as strict JSON:
 A venue is **accepted** only if all three booleans are true and `confidence >= 0.55`
 (`ACCEPT_THRESHOLD`). The reasoning string and the boolean signals are kept and shown
 per-venue in the UI (and would be logged at scale) — nothing here is manually eyeballed;
-every accept/reject has a machine-written reason attached.
+every accept/reject has a machine-written reason attached. `services/pipeline.py::run_pipeline`
+runs this scoring across all discovered candidates concurrently (bounded to 5 in flight at
+once, `FIT_SCORING_CONCURRENCY`) rather than sequentially, since it's the step that scales
+worst with candidate count.
 
 **Accept/reject bar, stated explicitly:** a candidate is usable if (a) it's an independent
 café/restaurant/salon, (b) it is not permanently closed, (c) a photo of its frontage is
@@ -82,15 +86,18 @@ different specific venues, but the accept/reject logic itself is fixed):
 
 | Venue | Address | Postcode | Type | Fit score | Frontage | Composite |
 |---|---|---|---|---|---|---|
-| 26 Furnival Street | 26 Furnival Street, London | EC4A 1JS | Restaurant | 0.90 | Mapillary — accepted | Accepted (classical fallback — Gemini image-generation quota wasn't available on this key's tier at run time; see §3) |
+| 26 Furnival Street | 26 Furnival Street, London | EC4A 1JS | Restaurant | 0.90 | Mapillary — accepted, entrance-zoomed | Accepted (classical fallback — Gemini image-generation quota wasn't available on this key's tier at run time; see §3) |
+| A Toca | 339–343 Wandsworth Road, London | SW8 2JH | Restaurant | — | Mapillary — accepted, entrance-zoomed | Accepted |
 | Cafe Angel | 250 [address partially unresolved], London | WC1X 8JR | Café | 0.90 | No usable frame across Mapillary/OSM/website — skipped | — (compositing correctly skipped; no base image to composite onto) |
 
-26 Furnival Street's fit reasoning: *"The building frontage is composed of plain brick and
-glass with no existing greenery or decorative elements, making it an ideal candidate for
-planters to soften the sterile, industrial aesthetic."* Its accepted Mapillary frame was
-also used to verify the entrance-zoom step added since (§2): `detect_entrance` located the
-doorway at 0.95 confidence, and the wide street shot was correctly cropped down to a tight,
-well-framed shot of just the entrance.
+26 Furnival Street's fit reasoning: *the building frontage is plain brick and glass with no
+existing greenery or decorative elements, making it a strong candidate for planters to
+soften the sterile, industrial aesthetic.* Its accepted Mapillary frame was also used to
+verify the entrance-zoom step (§2): `detect_entrance` located the doorway at 0.95 confidence,
+and the wide street shot was correctly cropped down to a tight, well-framed shot of just the
+entrance. A Toca followed the same path and is the second worked example committed under
+`frontend/public/results/` (before/after pair), generated via the results-showcase script
+described in §2/§4 rather than by hand.
 
 Cafe Angel passed the fit bar (0.90 — "paved, lacks greenery") but produced no usable
 frontage frame from any of the three sources, so the pipeline correctly skipped compositing
@@ -110,8 +117,8 @@ log with the specific per-attempt rejection reasoning.
 
 The 0.10-score rejections are the dominant real-world failure mode observed, not the vision
 judgement itself: several small independents have no OSM `image`/`wikimedia_commons` tag
-and no Mapillary coverage within the search tolerance, so `fit.py::_best_effort_image` has
-nothing to score them against. That's a coverage gap, not a scoring bug — see §4 for what
+and no Mapillary coverage within the search tolerance, so `fit.py`'s best-effort image lookup
+has nothing to score them against. That's a coverage gap, not a scoring bug — see §4 for what
 I'd change (progressively widening the Mapillary search radius, and a further fallback to
 Google Places/Street View coverage, which the brief itself allows as a source, before
 rejecting purely on "no image available").
@@ -120,7 +127,8 @@ rejecting purely on "no image available").
 
 Implementation: `backend/app/services/mapillary.py` (framing) +
 `backend/app/services/frontage.py` (orchestration/fallback) +
-`backend/app/services/vision.py::judge_frontage_usability` (accept/reject).
+`backend/app/services/vision.py::judge_frontage_usability` and `detect_entrance`
+(accept/reject + entrance zoom).
 
 **Why Mapillary, and how it differs from Street View's panorama model.** Street View gives
 you one panorama per capture point that you can virtually rotate to any heading on demand.
@@ -194,7 +202,7 @@ compounds into a worse composite later.
 
 **Zooming to the entrance.** Once a frame passes the usability gate, a second Gemini vision
 call (`vision.py::detect_entrance`, prompt `ENTRANCE_PROMPT`) locates the entrance door's
-tight bounding box, in the same 0-1000 normalized-coordinate style as the usability check.
+tight bounding box, in the same 0–1000 normalized-coordinate style as the usability check.
 `frontage.py::_zoom_to_entrance` crops the wide street frame around that box — padded for
 context (door frame, threshold, a little pavement either side), fitted to a 4:3 frame, and
 upscaled with Lanczos resampling if the crop comes out small — and this cropped image
@@ -204,8 +212,13 @@ whole facade, at essentially no extra pipeline cost (one more vision call per ac
 frame, not per attempt). If the entrance isn't confidently detected
 (`entrance_visible=false` or `confidence < 0.5`), the wide frame is kept rather than risking
 a bad crop — the original attempt is always still shown in the UI's attempt log either way.
-This directly implements what the original version of this note listed as future work (a
-doorway bounding-box step); see §4 for what's still open around it.
+
+**Results showcase.** `backend/scripts/fetch_results_auto.py` is a small, separate script
+(not part of the app's runtime request path) that exercises this exact same
+`frontage.capture_frontage` code against freshly-discovered independent restaurants and
+saves the first N accepted "before" frames into `frontend/public/results/` for the static
+`/results` demo page — it reuses the pipeline's real logic rather than curating photos by
+hand, and is how the 26 Furnival Street / A Toca before-images in that page were produced.
 
 ### Imagery-rights position
 
@@ -258,47 +271,79 @@ OpenStreetMap/Mapillary (see §2) genuinely improves this story, not just the co
 ## 3. Compositing the planters
 
 Implementation: `backend/app/products.py` (catalogue) +
-`backend/app/services/compositing.py` (generation + QA loop) using
-`gemini-2.5-flash-image` (the Gemini image-generation/editing model, aka "Nano Banana"),
-which accepts multiple reference images plus a text instruction and returns an edited
-image — the natural fit for "take this real product photo and place it into this real
-scene," as opposed to text-to-image generation which would reinterpret the product.
+`backend/app/services/compositing.py` (Gemini generation + QA loop, primary path) +
+`backend/app/services/classical_compositing.py` (deterministic, non-AI fallback path, used
+automatically when the primary path can't run at all — see below).
 
-**Estimating real-world scale from a reference object.** The frontage photo always
-contains one dependable real-world reference: **the entrance door itself.** UK commercial
-doors are near-universally 1.98–2.10m tall (`UK_DOOR_HEIGHT_M` in `compositing.py`) — a far
-tighter and more reliable range than estimating scale from, say, a person who might be
-anywhere in frame or absent entirely. Each product in the catalogue carries a measured
-`reference_height_m` (taken from the client's own product photography/spec — e.g. the
-black cylinder planter's container is ~0.55m, its planting reaches ~1.1m overall; see
-`products.py`). The compositing prompt states both figures explicitly and instructs the
-model to size the planter against the doorway using that real ratio, rather than "a
-reasonably sized planter."
+**Primary path — Gemini image generation.** `gemini_image_model` (`gemini-3.1-flash-image`,
+configured in `app/config.py`) accepts multiple reference images plus a text instruction and
+returns an edited image — the natural fit for "take this real product photo and place it
+into this real scene," as opposed to text-to-image generation which would reinterpret the
+product from a caption.
 
-This is a **prompt-based scale anchor** — appropriate for a three-venue prototype, but the
-honest limitation is that it relies on the model's own visual estimate of the doorway's
-pixel height rather than a measured one. The more rigorous version I'd build next: detect
-the doorway's bounding box in the frontage image programmatically (a small vision call
-asking for door top/bottom pixel coordinates, or a lightweight open-vocabulary detector),
-compute an exact metres-per-pixel figure from the known door height, derive the product's
-exact target pixel height from that, and pass the **precise pixel target** into the prompt
-(or use it to pre-scale a cutout before compositing) instead of leaving the ratio to the
-model's visual judgement. That removes the single biggest source of scale drift.
+**A real constraint this prototype ran into, and why the fallback path exists.** Gemini's
+image-*generation* models currently carry a 0/day quota on every project by default,
+including this one's — regardless of which text/vision model tier the project otherwise has
+access to. Generating a composite at all requires a billed Gemini project; there is no
+free-tier path around it. Rather than let the whole compositing step silently fail (or block
+the submission on getting a billed key provisioned in time), `compositing.py::composite_for_venue`
+only falls back to the classical path **when Gemini could not generate an image at all across
+every attempt** — a capability gap, not a quality judgement. A generation Gemini *did* produce
+but the QA gate rejected stays rejected; it does not silently swap to the classical method.
+This is exactly the kind of infrastructure/quota reality a second engineer building this for
+real would hit, so it's handled as a designed fallback rather than patched around.
 
-**Keeping products visually faithful.** Three levers, all in `compositing.py`:
-1. The actual product photo is passed as a **reference image**, not described in text —
-   the model is editing/compositing against real pixels, not re-imagining "a black
-   planter" from a caption.
-2. The prompt explicitly instructs: *"keep the planter's container material, colour, shape
-   and the plants/foliage identical to Image 2. Do not invent a different container or
-   generic plant — reuse the exact product shown."*
-3. The **QA gate** (below) checks `product_matches_reference` on every generation and
-   rejects drift instead of accepting a plausible-looking but different planter.
+**Estimating real-world scale from a reference object (both paths).** The frontage photo
+always contains one dependable real-world reference: **the entrance door itself.** UK
+commercial doors are near-universally 1.98–2.10m tall (`UK_DOOR_HEIGHT_M`) — a far tighter
+and more reliable range than estimating scale from, say, a person who might be anywhere in
+frame or absent entirely. Each product in the catalogue carries a measured
+`reference_height_m` (taken from the client's own product photography/spec — e.g. the black
+cylinder planter's container is ~0.55m, its planting reaches ~1.1m overall; see
+`products.py`).
 
-**Rejection criteria** (`services/vision.py::judge_composite_quality`,
-`QA_PROMPT`) — the automated gate a generation must pass before it's ever shown as a
-result. Given the original frontage photo and the composited output side by side, Gemini
-answers six independent booleans plus an overall verdict:
+- **Gemini path:** the compositing prompt (`compositing.py::COMPOSITE_PROMPT`) states both
+  figures explicitly and instructs the model to size the planter against the doorway using
+  that real ratio — a **prompt-based scale anchor**, appropriate for a prototype, but the
+  honest limitation is that it relies on the model's own visual estimate of the doorway's
+  pixel height rather than a measured one.
+- **Classical path:** this is where the door-height reference is actually measured rather
+  than estimated. A cheap, text-only Gemini vision call (`classical_compositing.py::_detect_door`,
+  `DOOR_PROMPT`) returns the door's top/bottom pixel position (0–1000 normalized) and a
+  ground placement point beside it. From the door's measured pixel height and the same
+  2.04m assumption, the code computes an exact **metres-per-pixel** figure for that specific
+  photo, and scales the product's known `visual_height_m` into an exact target pixel height
+  — a precise, deterministic version of the same idea the Gemini path leaves to the model's
+  judgement.
+
+The more rigorous version I'd build next for the *Gemini* path specifically: reuse the same
+door-detection call the classical path and the entrance-zoom step (§2) already make, compute
+the precise pixel target from it, and pass that **exact number** into the compositing prompt
+(or pre-scale a cutout before compositing) instead of leaving the ratio to the
+image-generation model's own visual estimate. Three separate parts of this codebase currently
+detect "the door" independently (entrance-zoom, classical placement, Gemini's own visual
+guess) rather than sharing one detection — see §4.
+
+**Keeping products visually faithful.**
+- **Gemini path**, three levers, all in `compositing.py`:
+  1. The actual product photo is passed as a **reference image**, not described in text —
+     the model is editing/compositing against real pixels, not re-imagining "a black
+     planter" from a caption.
+  2. The prompt explicitly instructs: *keep the planter's container material, colour, shape
+     and the plants/foliage identical to the reference image; reuse the exact product shown,
+     don't invent a different one.*
+  3. The **QA gate** (below) checks `product_matches_reference` on every generation and
+     rejects drift instead of accepting a plausible-looking but different planter.
+- **Classical path**, faithfulness is structural rather than prompted: `rembg`
+  (`isnet-general-use` model, run fully locally — no API call) segments the actual product
+  photo into a cutout, which is pasted directly onto the frontage. There is no
+  reinterpretation step to drift in the first place; the trade-off is realism, not fidelity
+  (see limitations below).
+
+**Rejection criteria — Gemini path** (`services/vision.py::judge_composite_quality`,
+`QA_PROMPT`) — the automated gate a generation must pass before it's ever shown as a result.
+Given the original frontage photo and the composited output side by side, Gemini answers six
+independent booleans plus an overall verdict:
 
 | Check | Rejects when |
 |---|---|
@@ -312,15 +357,34 @@ answers six independent booleans plus an overall verdict:
 `accepted` is true only if **all six** are true — a single failed check is enough to reject
 the whole generation. This is deliberately strict: a generation bad enough to embarrass the
 sales rep sending it should never reach a venue owner, and each of these six is a distinct,
-common failure mode of image-compositing models (the brief's "rejection criteria" ask maps
-directly onto this table).
+common failure mode of image-compositing models.
 
-**Retry policy.** Up to `MAX_ATTEMPTS = 2` generations per venue/product. If the first
-generation is rejected, a second is attempted; if that also fails, the venue is marked
-`composite.accepted = false` with the last rejection reasoning surfaced, rather than either
-silently returning a bad image or retrying indefinitely. All attempts (including rejected
-ones, with their per-check breakdown) are kept in `CompositeResult.attempts` and shown in
-the UI, so a rejected venue's failure mode is visible, not hidden.
+**Rejection criteria — classical path.** There is no image-quality QA gate here (there's no
+generation to judge — the pasted cutout is what it is), only a capability gate: if the door
+detector reports `door_visible: false`, the attempt is rejected outright rather than pasting
+a planter at a guessed position with no scale reference. Its output is explicitly labelled
+in the UI (`method: "classical"`, a "Classical fallback used" badge) rather than presented as
+indistinguishable from a Gemini generation — a venue owner-facing sales visual should never
+be ambiguous about which method produced it, and see the honest limitation called out below.
+
+**Honest limitation of the classical path.** It is a real, inspectable result — the actual
+product cutout, scaled from the same doorway-height reference math, placed at a
+vision-detected ground point with a synthetic drop shadow — but it is a cutout-and-shadow
+paste, not photorealistic generation: no perspective warp to match the camera angle, no
+physically simulated relighting to match the scene's lighting direction/colour temperature.
+It exists so the pipeline always produces *something* inspectable when the primary path is
+unavailable, with that limitation surfaced rather than hidden, not as a claimed substitute
+for the Gemini path's realism.
+
+**Retry policy.** Up to `MAX_ATTEMPTS = 2` Gemini generations per venue/product. If the
+first generation is rejected, a second is attempted; if that also fails **and at least one
+of the two attempts produced an image at all**, the venue is marked `composite.accepted =
+false` with the last rejection reasoning surfaced. If Gemini produced no image on either
+attempt (the quota case), the classical fallback runs once. Either way, the venue is never
+retried indefinitely and never silently returns a bad image. All attempts — including
+rejected Gemini ones with their per-check breakdown, and the classical attempt when it runs
+— are kept in `CompositeResult.attempts` and shown in the UI, so a rejected venue's failure
+mode is visible, not hidden.
 
 **Product selection per venue.** For the prototype, `products.py::pick_product_for_venue`
 picks deterministically by venue type (salons → white cube planters, restaurants → corten
@@ -328,15 +392,25 @@ modular, cafés → black cylinder) so every venue gets a plausible-looking prod
 human choosing per venue. A production version would score fit against the facade's
 colour/material and available pavement width instead of a fixed type mapping.
 
+**Manual demo/prompt playground.** `backend/app/routers/demo.py` +
+`compositing.py::generate_demo_composite` expose a separate, non-pipeline endpoint: upload
+any frontage photo, pick a product, optionally edit the compositing prompt, and see a single
+generation's result and QA breakdown directly — useful for iterating on the prompt itself
+(`COMPOSITE_PROMPT` is exposed via `build_composite_prompt` as an editable starting point)
+without running the full discovery→fit→frontage pipeline each time. It falls back to the
+same classical method under the same quota condition, but a QA rejection here is shown for
+information rather than gating anything — the playground's purpose is inspecting what a
+given prompt produces, not enforcing the pipeline's accept bar.
+
 ## 4. What I'd change with more time
 
-- Precise pixel-based scale anchoring (see §3) instead of a prompt-only ratio. The doorway
-  bounding-box step now exists (§2, `detect_entrance`) and is used to crop the frontage
-  image, but it isn't yet wired into the compositing prompt's scale math — §3 still leaves
-  the door-height ratio to the image-generation model's own visual estimate rather than
-  passing it the crop's already-detected pixel box. Sharing that one detection between
-  framing and scaling, instead of each re-deriving its own notion of "the door," is the
-  natural next step.
+- Share one doorway detection across framing, classical scaling, and Gemini's compositing
+  prompt, instead of three separate places (`detect_entrance` in §2, `_detect_door` in the
+  classical path, and Gemini's own visual guess in the primary path) each re-deriving their
+  own notion of "the door." The classical path already proves the measured-pixel approach
+  works; wiring that same detection's pixel box into the Gemini prompt's scale math (as an
+  exact number, not a stated ratio) is the natural next step and removes the single biggest
+  source of scale drift in the primary path.
 - Widen the Mapillary search past a fixed 60m/70° tolerance when coverage near a venue is
   thin — e.g. progressively growing the bounding box — instead of falling straight to the
   OSM-photo/website fallback the first time nothing in range matches well. In practice this
@@ -348,6 +422,14 @@ colour/material and available pavement width instead of a fixed type mapping.
   pipeline otherwise built to be keyless at the discovery stage.
 - Reproject panoramic (`is_pano`) Mapillary captures to a directional crop instead of
   skipping them outright — real feature, noted as a limitation in §2, not silently ignored.
-- Persisted run history (currently in-memory per process — fine for a prototype, not for
-  5,000/week) and a moderation queue UI for the rare reject-after-2-attempts case rather
-  than just surfacing the failure.
+- Add a perspective-warp + relighting step to the classical fallback (project the cutout
+  onto an estimated ground plane, sample the frontage's local lighting for the shadow/tint)
+  so it degrades more gracefully when it's the only path available, rather than being
+  visibly a flat paste.
+- Persisted run history (currently an in-memory `RunStore` per process, `app/storage.py` —
+  fine for a prototype, not for 5,000/week) and a moderation queue UI for the rare
+  reject-after-2-attempts case rather than just surfacing the failure.
+- A real billed Gemini project for the pipeline's actual submitted run, so the primary
+  Gemini compositing path — not the classical fallback — is what's demonstrated end to end;
+  the classical path's existence and the reasoning above is itself part of what I'd defend
+  on a call, but it's a fallback, not the intended primary experience.
