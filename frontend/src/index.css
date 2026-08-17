@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+:root {
+  --paper: #0a0a0c;
+  --surface: #131317;
+  --surface-2: #1b1b20;
+  --ink: #f3f2ee;
+  --ink-muted: #97979f;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.22);
+  --accent: #8ce99a;
+  --accent-soft: rgba(140, 233, 154, 0.14);
+  --good: #8ce99a;
+  --good-soft: rgba(140, 233, 154, 0.14);
+  --bad: #ff7a63;
+  --bad-soft: rgba(255, 122, 99, 0.14);
+  --warn: #f4c05e;
+  --warn-soft: rgba(244, 192, 94, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body {
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-mono-ui {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.font-display {
+  font-family: "Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Custom cursor: only engages on devices with a precise pointer (mouse/trackpad),
+   never on touch, so it can't strand mobile users without a visible cursor. */
+@media (hover: hover) and (pointer: fine) {
+  body.has-custom-cursor,
+  body.has-custom-cursor * {
+    cursor: none !important;
+  }
+}
+
+@keyframes marquee-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: marquee-scroll 22s linear infinite;
+}
+
+@keyframes preloader-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes slow-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.animate-slow-blink {
+  animation: slow-blink 2.4s ease-in-out infinite;
+}

@@ -1,0 +1,23 @@
+# Client brief (not for the public repo)
+Innate AI Dev Test V2.pdf
+assets/
+
+# Python
+backend/.venv/
+backend/venv/
+__pycache__/
+*.pyc
+backend/.env
+
+# Generated pipeline output
+backend/data/images/*
+!backend/data/images/.gitkeep
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Editor / OS
+.DS_Store
+Thumbs.db
