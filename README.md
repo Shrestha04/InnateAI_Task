@@ -119,8 +119,7 @@ API docs at `http://127.0.0.1:8000/docs`.
 default — this applies regardless of the key otherwise working for vision/text calls
 (`gemini-3.1-flash-lite`, used for fit/usability/QA judgements). If your key doesn't have
 image-generation quota, compositing still works end to end via the local, non-AI
-`classical_compositing` fallback (rembg cutout + door-height scale math — see design.md
-§3) rather than failing; results are labelled `method: "classical"` in the API/UI so it's
+`classical_compositing` fallback (rembg cutout + door-height scale math — see design.md) rather than failing; results are labelled `method: "classical"` in the API/UI so it's
 clear which path produced them. To exercise the primary Gemini compositing path, the
 Gemini project backing the key needs billing enabled.
 
